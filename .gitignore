@@ -1,0 +1,17 @@
+@"
+# Virtual environment
+.venv/
+
+# Vosk model — too large for GitHub, users download themselves
+model/
+
+# Cache and logs
+apps/app_cache.json
+showme_stats.json
+showme.log
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
+"@ | Out-File -FilePath .gitignore -Encoding utf8
