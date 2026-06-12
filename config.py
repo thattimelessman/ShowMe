@@ -35,7 +35,7 @@ AUTOSTART_NAME  = "ShowMe"            # name in Windows registry autostart
 DEBUG_MODE      = False               # prints every transcript if True
 
 # ── Custom overrides ─────────────────────
-# Add manual mappings here if fuzzy match ever gets it wrong
+# we can add manual mappings here if fuzzy match ever gets it wrong
 # "alias" : "full exe path or app name in cache"
 
 

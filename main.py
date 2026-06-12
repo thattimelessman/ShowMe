@@ -118,7 +118,7 @@ def main():
         if paused:
             listener.stop()
         else:
-            # restart listener thread
+            # for restarting listener thread 
             t = threading.Thread(
                 target=listener.start,
                 args=(app_dict, MODEL_DIR, SAMPLE_RATE, CHUNK_SIZE),
