@@ -191,18 +191,21 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
                 p.end()
 
         # ── Window ────────────────────────────
+        # Resolve asset paths once using __file__ so they work regardless
+        # of the process CWD (e.g. when launched from registry autostart).
+        _assets_dir  = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
+        _icon_path   = os.path.join(_assets_dir, "icon_green.png")
+        _icon_path_r = os.path.join(_assets_dir, "icon_red.png")
+        _ico_path    = os.path.join(_assets_dir, "icon_green.ico")
+
         win = QWidget()
         win.setWindowTitle("ShowMe — Settings")
-        win.setWindowIcon(QIcon("assets/icon_green.ico"))
+        win.setWindowIcon(QIcon(_ico_path))          # absolute path — always resolves
         win.setMinimumSize(600, 680)
         win.setMaximumSize(700, 780)
 
         from PyQt6.QtGui import QPixmap
         mic_logo = QLabel()
-        _icon_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "assets", "icon_green.png"
-        )
         _pixmap = QPixmap(_icon_path)
         mic_logo.setPixmap(_pixmap.scaled(
             52, 52,
@@ -885,26 +888,28 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
                         msg = listener_status_queue.get_nowait()
                         if msg == "Listening":
                             status_dot.set_listening(True)
+                            # header mic logo → green
                             mic_logo.setPixmap(QPixmap(_icon_path).scaled(
                                 52, 52,
                                 Qt.AspectRatioMode.KeepAspectRatio,
                                 Qt.TransformationMode.SmoothTransformation
                             ))
+                            # taskbar + title-bar icon → green
+                            win.setWindowIcon(QIcon(_icon_path))
                             status_text.setText("Listening")
                             status_text.setStyleSheet(
                                 "color: #2D68C4; font-size: 12px; font-weight: 600;"
                             )
                         elif msg == "Stopped":
                             status_dot.set_listening(False)
-                            _red_path = os.path.join(
-                                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                "assets", "icon_red.png"
-                            )
-                            mic_logo.setPixmap(QPixmap(_red_path).scaled(
+                            # header mic logo → red
+                            mic_logo.setPixmap(QPixmap(_icon_path_r).scaled(
                                 52, 52,
                                 Qt.AspectRatioMode.KeepAspectRatio,
                                 Qt.TransformationMode.SmoothTransformation
                             ))
+                            # taskbar + title-bar icon → red
+                            win.setWindowIcon(QIcon(_icon_path_r))
                             status_text.setText("Paused")
                             status_text.setStyleSheet(
                                 "color: #920000; font-size: 12px; font-weight: 600;"

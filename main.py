@@ -98,6 +98,8 @@ def main():
     _add_to_autostart()
 
     # ── 4. Tray callbacks ────────────────
+    _is_paused = [False]   # mutable flag — shared across closures
+
     def on_quit():
         log.info("Quit requested.")
         listener.stop()
@@ -105,7 +107,10 @@ def main():
 
     def on_settings():
         from frontend.settings_window import open_settings
-        open_settings(app_dict, on_rescan)
+        # Prime the queue with current state so the settings window
+        # opens showing the correct icon immediately, even if already paused.
+        listener.status_queue.put_nowait("Stopped" if _is_paused[0] else "Listening")
+        open_settings(app_dict, on_rescan, listener.status_queue)
 
     def on_rescan():
         nonlocal app_dict
@@ -115,6 +120,7 @@ def main():
         log.info(f"Rescan complete: {len(app_dict)} apps.")
 
     def on_pause_resume(paused: bool):
+        _is_paused[0] = paused
         if paused:
             listener.stop()
         else:
