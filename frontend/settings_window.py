@@ -184,7 +184,7 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
                 p = QPainter(self)
                 p.setRenderHint(QPainter.RenderHint.Antialiasing)
                 col = QColor("#569c12") if self._on else QColor("#920000")
-                col.setAlpha(int(150 + 105 * self._pulse))
+                col.setAlpha(min(255, int(150 + 105 * self._pulse)))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QBrush(col))
                 p.drawEllipse(0, 0, 10, 10)
@@ -923,7 +923,7 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
 
         poll_timer = QTimer()
         poll_timer.timeout.connect(poll_status)
-        poll_timer.start(500)
+        poll_timer.start(100)   # 100ms — fast enough to feel instant
 
         apply_theme()
         win.show()

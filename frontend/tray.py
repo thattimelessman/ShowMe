@@ -118,9 +118,6 @@ class ShowMeTray:
     def run(self):
         import pystray
 
-        # Must be set BEFORE Icon() is constructed
-        _set_dpi_aware()
-
         self._icon = pystray.Icon(
             name  = "ShowMe",
             icon  = _load_icon(True),   # green on startup
