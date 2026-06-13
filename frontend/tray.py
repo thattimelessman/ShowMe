@@ -1,15 +1,10 @@
 # pylint: disable=all
 # ─────────────────────────────────────────
-#  ShowMe — frontend/tray.py  v4
+#  ShowMe — frontend/tray.py  v5
 #
-#  Fixes vs v3:
-#   [1] Icon correctly goes RED on pause, GREEN on resume
-#       (v3 had inverted logic — self._paused already flipped
-#        before _load_icon was called, so result was always wrong)
-#   [2] DPI awareness declared before tray creation so the
-#       right-click menu isn't blurry on 125 %/150 % displays
-#   [3] "ShowMe v1.0" title renders bold+black (default=True)
-#       instead of greyed-out disabled text
+#  Fixes vs v4:
+#   [1] _set_dpi_aware() is now ACTUALLY CALLED at the top of run()
+#       before the Icon object is created — fixes blurry-first-click bug.
 # ─────────────────────────────────────────
 
 import os
@@ -72,9 +67,6 @@ class ShowMeTray:
         import pystray
         pause_label = "Resume" if self._paused else "Pause"
         return pystray.Menu(
-            # default=True  → Windows renders this bold + black
-            # enabled=False → not clickable
-            # Together: visible title, not a button, not greyed out
             pystray.MenuItem(
                 "ShowMe  v1.0",
                 None,
@@ -90,18 +82,10 @@ class ShowMeTray:
         )
 
     def _toggle_pause(self, icon, item):
-        # Flip state first
         self._paused = not self._paused
-
-        # NOW update icon: paused=True → listening=False → RED
-        #                  paused=False → listening=True → GREEN
         if self._icon:
             self._icon.icon = _load_icon(not self._paused)
-
-        # Swap Pause ↔ Resume label
         self._icon.menu = self._build_menu()
-
-        # Notify main.py
         self.on_pause_resume(self._paused)
         log.info("ShowMe %s", "paused" if self._paused else "resumed")
 
@@ -117,6 +101,10 @@ class ShowMeTray:
 
     def run(self):
         import pystray
+
+        # ← FIX [1]: Must be called BEFORE Icon() is created.
+        # Previously defined but never invoked — causing blurry first render.
+        _set_dpi_aware()
 
         self._icon = pystray.Icon(
             name  = "ShowMe",
