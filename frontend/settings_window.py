@@ -256,6 +256,7 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
             img.save(path, "PNG")
             return path.replace("\\", "/")
 
+    
 
         # ── Window ────────────────────────────
         win = QDialog()
@@ -600,6 +601,12 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
             )
             last_cmd_lbl.setStyleSheet(f"color: {c('text3')}; font-size: 11px;")
             footer_lbl.setStyleSheet(f"color: {c('text3')}; font-size: 10px;")
+            footer_lbl.setText(
+                f'ShowMe v1.0  ·  open source  ·  '
+                f'<a href="https://github.com/thattimelessman" '
+                f'style="color: {c("text2")}; text-decoration: none;">'
+                f'github.com/thattimelessman</a>'
+            )
             ac_lbl.setStyleSheet(f"color: {c('text2')}; font-size: 13px;")
             sens_val.setStyleSheet(f"color: {c('accent')}; font-weight: bold;")
             hint_lbl.setStyleSheet(f"color: {c('text3')}; font-size: 11px;")
@@ -1126,8 +1133,10 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         bl = QHBoxLayout(bottom)
         bl.setContentsMargins(20, 0, 20, 0)
         bl.setSpacing(8)
-        footer_lbl = QLabel("ShowMe v1.0  ·  open source  ·  github.com/thattimelessman")
-        # colour set in apply_theme()
+        footer_lbl = QLabel()
+        footer_lbl.setOpenExternalLinks(True)
+        footer_lbl.setTextFormat(Qt.TextFormat.RichText)
+        # text + colour set in apply_theme()
         bl.addWidget(footer_lbl)
         bl.addStretch()
         rescan_btn = QPushButton("Rescan Apps")
