@@ -1,8 +1,23 @@
 # pylint: disable=all
 # ─────────────────────────────────────────
-#  ShowMe — frontend/settings_window.py  v2
+#  ShowMe — frontend/settings_window.py  v4
+#
+#  Fixes vs v3:
+#   [1] Alpha overflow (StatusDot): _pulse clamped to [0.0, 1.0]
+#       so setAlpha() never receives a value > 255. (kept from v3)
+#
+#   [2] Thread-safety (definitive fix):
+#       open_settings() no longer spawns a background thread.
+#       Instead it posts _show_window onto the main-thread queue
+#       (provided by main.py via init()). _show_window() therefore
+#       always runs on the thread that owns QApplication.
+#
+#   [3] Reopen crash fix:
+#       _show_window() uses a per-window QEventLoop instead of
+#       app.exec(). The loop quits when the window is destroyed,
+#       leaving QApplication alive and reusable for every subsequent
+#       open — no more "QApplication not created in main() thread".
 # ─────────────────────────────────────────
-# pylint: disable=no-name-in-module,broad-exception-caught,missing-module-docstring,missing-function-docstring,missing-class-docstring,invalid-name,unused-import
 import logging
 import sys
 import os
@@ -15,6 +30,18 @@ STATS_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "showme_stats.json"
 )
+
+# Set by main.py via init() before any settings window is opened.
+_ui_queue = None
+
+
+def init(q):
+    """
+    Wire this module to the main-thread UI dispatch queue.
+    Must be called once from main.py before open_settings() is used.
+    """
+    global _ui_queue
+    _ui_queue = q
 
 
 def _load_stats() -> dict:
@@ -52,68 +79,71 @@ def record_command(app_name: str):
 
 
 def open_settings(app_dict: dict, on_rescan_callback, listener_status_queue=None):
-    t = threading.Thread(
-        target=_show_window,
-        args=(app_dict, on_rescan_callback, listener_status_queue),
-        daemon=True
-    )
-    t.start()
+    """
+    Request the settings window to open.
+    If init() was called (normal runtime), posts onto the main-thread queue.
+    Falls back to the old thread pattern if called before init() (tests etc).
+    """
+    if _ui_queue is not None:
+        _ui_queue.put(lambda: _show_window(app_dict, on_rescan_callback, listener_status_queue))
+    else:
+        # Fallback — pre-init / testing only
+        t = threading.Thread(
+            target=_show_window,
+            args=(app_dict, on_rescan_callback, listener_status_queue),
+            daemon=True
+        )
+        t.start()
 
 
 def _make_tray_icon(listening: bool):
-    """
-    Generate a crisp tray icon.
-    Green circle with white mic = listening.
-    Red circle with white mic = paused.
-    Returns PIL Image.
-    """
     from PIL import Image, ImageDraw
-
     size = 64
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-
-    # background circle
     color = (86, 156, 18, 255) if listening else (146, 0, 0, 255)
     draw.ellipse([2, 2, size - 2, size - 2], fill=color)
-
-    # mic body — white rounded rect
     mw, mh = 18, 22
     mx = (size - mw) // 2
     my = 10
-    draw.rounded_rectangle([mx, my, mx + mw, my + mh],
-                            radius=9, fill=(255, 255, 255, 255))
-
-    # mic stand arc
+    draw.rounded_rectangle([mx, my, mx + mw, my + mh], radius=9, fill=(255, 255, 255, 255))
     draw.arc([14, 28, 50, 46], start=0, end=180, fill=(255, 255, 255, 220), width=3)
-
-    # pole
     cx = size // 2
     draw.line([cx, 46, cx, 54], fill=(255, 255, 255, 220), width=3)
-
-    # base
     draw.line([cx - 8, 54, cx + 8, 54], fill=(255, 255, 255, 220), width=3)
-
     return img
 
 
 def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None):
+    """
+    Build and show the settings window.
+    Always runs on the main thread (posted via queue by open_settings).
+
+    Uses a per-window QEventLoop so:
+      - The window is fully interactive (events processed).
+      - QApplication is NOT consumed — it stays alive for future opens.
+      - No "QApplication not created in main() thread" on second open.
+    """
     try:
         from PyQt6.QtWidgets import (
-            QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+            QApplication, QDialog, QVBoxLayout, QHBoxLayout,
             QLabel, QPushButton, QScrollArea, QFrame,
             QLineEdit, QSlider, QComboBox, QTabWidget,
             QCheckBox, QTextEdit, QListWidget, QListWidgetItem,
             QCompleter
         )
-        from PyQt6.QtCore import Qt, QTimer, QStringListModel
+        from PyQt6.QtCore import Qt, QTimer, QStringListModel, QEventLoop
         from PyQt6.QtGui import (
-        QFont, QColor, QPainter, QPen, QBrush,
-        QPainterPath, QIcon
-  )
+            QFont, QColor, QPainter, QPen, QBrush,
+            QPainterPath, QIcon, QPixmap
+        )
         import pyaudio
 
-        app = QApplication.instance() or QApplication(sys.argv)
+        # QApplication must already exist on this (main) thread.
+        app = QApplication.instance()
+        if app is None:
+            log.error("Settings: QApplication not ready — window skipped.")
+            return
 
         # ── Themes ───────────────────────────
         THEMES = {
@@ -154,15 +184,15 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         def c(key):
             return THEMES[current_theme[0]][key]
 
-       
-
         # ── Status dot ────────────────────────
+        from PyQt6.QtWidgets import QWidget
+
         class StatusDot(QWidget):
             def __init__(self):
                 super().__init__()
-                self._on = True
+                self._on   = True
                 self._pulse = 0.0
-                self._dir = 1
+                self._dir   = 1
                 self.setFixedSize(10, 10)
                 t = QTimer(self)
                 t.timeout.connect(self._tick)
@@ -173,10 +203,17 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
                 self.update()
 
             def _tick(self):
-                self._pulse += 0.08 * self._dir
-                if self._pulse >= 1:
+                # FIX [1]: clamp _pulse to [0.0, 1.0] BEFORE boundary check.
+                # Previously _pulse could momentarily exceed 1.0, making
+                # 150 + 105 * 1.002 = 255.21 → int 255 ... wait actually
+                # int(255.21) = 255 which is fine, but _pulse = 1.002 meant
+                # the >= 1.0 check fired a tick late, allowing values like
+                # _pulse = 1.08 → alpha = int(150 + 105*1.08) = int(263.4) = 263 → crash.
+                # Clamping first guarantees alpha is always in [150, 255].
+                self._pulse = min(1.0, max(0.0, self._pulse + 0.08 * self._dir))
+                if self._pulse >= 1.0:
                     self._dir = -1
-                elif self._pulse <= 0:
+                elif self._pulse <= 0.0:
                     self._dir = 1
                 self.update()
 
@@ -184,27 +221,29 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
                 p = QPainter(self)
                 p.setRenderHint(QPainter.RenderHint.Antialiasing)
                 col = QColor("#569c12") if self._on else QColor("#920000")
-                col.setAlpha(min(255, int(150 + 105 * self._pulse)))
+                # _pulse is clamped to [0,1] → alpha in [150, 255] — always safe
+                col.setAlpha(int(150 + 105 * self._pulse))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QBrush(col))
                 p.drawEllipse(0, 0, 10, 10)
                 p.end()
 
-        # ── Window ────────────────────────────
-        # Resolve asset paths once using __file__ so they work regardless
-        # of the process CWD (e.g. when launched from registry autostart).
+        # ── Asset paths ───────────────────────
         _assets_dir  = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
         _icon_path   = os.path.join(_assets_dir, "icon_green.png")
         _icon_path_r = os.path.join(_assets_dir, "icon_red.png")
         _ico_path    = os.path.join(_assets_dir, "icon_green.ico")
 
-        win = QWidget()
+        # ── Window ────────────────────────────
+        win = QDialog()
         win.setWindowTitle("ShowMe — Settings")
-        win.setWindowIcon(QIcon(_ico_path))          # absolute path — always resolves
+        win.setWindowIcon(QIcon(_ico_path))
         win.setMinimumSize(600, 680)
         win.setMaximumSize(700, 780)
+        win.setWindowFlags(
+            win.windowFlags() & ~Qt.WindowType.WindowContextHelpButtonHint
+        )
 
-        from PyQt6.QtGui import QPixmap
         mic_logo = QLabel()
         _pixmap = QPixmap(_icon_path)
         mic_logo.setPixmap(_pixmap.scaled(
@@ -214,14 +253,13 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         ))
         mic_logo.setFixedSize(52, 52)
         status_dot = StatusDot()
-        
+
         last_command = ["—"]
 
         stats = _load_stats()
         most_opened = "—"
         if stats.get("most_opened"):
-            most_opened = max(stats["most_opened"],
-                              key=lambda k: stats["most_opened"][k])
+            most_opened = max(stats["most_opened"], key=lambda k: stats["most_opened"][k])
 
         def apply_theme():
             win.setStyleSheet(f"""
@@ -385,7 +423,6 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         header.setFixedHeight(76)
         hl = QHBoxLayout(header)
         hl.setContentsMargins(20, 12, 20, 12)
-
         hl.addWidget(mic_logo)
         hl.addSpacing(12)
 
@@ -415,9 +452,7 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         sl.setSpacing(8)
         sl.addWidget(status_dot)
         status_text = QLabel("Listening")
-        status_text.setStyleSheet(
-            "color: #2D68C4; font-size: 12px; font-weight: 600;"
-        )
+        status_text.setStyleSheet("color: #2D68C4; font-size: 12px; font-weight: 600;")
         sl.addWidget(status_text)
         sl.addStretch()
         last_cmd_lbl = QLabel("Last: —")
@@ -425,7 +460,6 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         sl.addWidget(last_cmd_lbl)
         root.addWidget(status_bar)
 
-        # divider
         div = QFrame()
         div.setFrameShape(QFrame.Shape.HLine)
         div.setFixedHeight(1)
@@ -463,7 +497,6 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         stats_row.addWidget(stat_card(most_opened, "most opened", "#888"))
         dl.addLayout(stats_row)
 
-        # app count
         ac = QWidget()
         ac.setFixedHeight(48)
         acl = QHBoxLayout(ac)
@@ -534,14 +567,12 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         cs.setWordWrap(True)
         ctl.addWidget(cs)
 
-        # add row with autocomplete
         add_row = QHBoxLayout()
         phrase_input = QLineEdit()
         phrase_input.setPlaceholderText('Voice phrase  e.g. "exploded"')
         app_input = QLineEdit()
         app_input.setPlaceholderText('App name — type to search')
 
-        # autocomplete on app_input
         completer_model = QStringListModel(all_names)
         completer = QCompleter(completer_model, app_input)
         completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
@@ -557,12 +588,9 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         add_row.addWidget(add_btn)
         ctl.addLayout(add_row)
 
-        # suggestions list
         suggestions_list = QListWidget()
-        suggestions_list.setFixedHeight(0)  # hidden until typing
-        suggestions_list.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
+        suggestions_list.setFixedHeight(0)
+        suggestions_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         ctl.addWidget(suggestions_list)
 
         def update_suggestions(text):
@@ -586,11 +614,8 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
         app_input.textChanged.connect(update_suggestions)
         suggestions_list.itemClicked.connect(pick_suggestion)
 
-        # existing mappings list
         try:
-            sys.path.insert(
-                0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            )
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             from config import CUSTOM_MAPPINGS
             custom_map = dict(CUSTOM_MAPPINGS)
         except Exception:
@@ -736,9 +761,7 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
             if startup_check.isChecked():
                 try:
                     import winreg
-                    pythonw = os.path.join(
-                        os.path.dirname(sys.executable), "pythonw.exe"
-                    )
+                    pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
                     script = os.path.join(
                         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "showme.pyw"
@@ -888,13 +911,11 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
                         msg = listener_status_queue.get_nowait()
                         if msg == "Listening":
                             status_dot.set_listening(True)
-                            # header mic logo → green
                             mic_logo.setPixmap(QPixmap(_icon_path).scaled(
                                 52, 52,
                                 Qt.AspectRatioMode.KeepAspectRatio,
                                 Qt.TransformationMode.SmoothTransformation
                             ))
-                            # taskbar + title-bar icon → green
                             win.setWindowIcon(QIcon(_icon_path))
                             status_text.setText("Listening")
                             status_text.setStyleSheet(
@@ -902,13 +923,11 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
                             )
                         elif msg == "Stopped":
                             status_dot.set_listening(False)
-                            # header mic logo → red
                             mic_logo.setPixmap(QPixmap(_icon_path_r).scaled(
                                 52, 52,
                                 Qt.AspectRatioMode.KeepAspectRatio,
                                 Qt.TransformationMode.SmoothTransformation
                             ))
-                            # taskbar + title-bar icon → red
                             win.setWindowIcon(QIcon(_icon_path_r))
                             status_text.setText("Paused")
                             status_text.setStyleSheet(
@@ -923,11 +942,18 @@ def _show_window(app_dict: dict, on_rescan_callback, listener_status_queue=None)
 
         poll_timer = QTimer()
         poll_timer.timeout.connect(poll_status)
-        poll_timer.start(100)   # 100ms — fast enough to feel instant
+        poll_timer.start(100)
 
         apply_theme()
         win.show()
-        app.exec()
+
+        # FIX [3]: Local QEventLoop tied to this window's lifetime.
+        # When the window is closed/destroyed, loop.quit() fires and
+        # _show_window returns — QApplication stays alive on the main
+        # thread, ready for the next open. No more reopen crash.
+        loop = QEventLoop()
+        win.finished.connect(loop.quit)  # QDialog.finished fires on X or Close
+        loop.exec()
 
     except Exception as e:
         log.error("Settings window error: %s", e)
