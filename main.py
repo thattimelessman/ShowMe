@@ -2,23 +2,33 @@
 #  ShowMe — main.py
 #  Entry point. Wires everything together.
 #
+#  Architecture (fixed):
+#    - QApplication lives on the main thread (required by Qt)
+#    - pystray runs in a daemon thread (it only needs win32 message pump)
+#    - All Qt work from background threads is posted via _ui_queue
+#      and drained every 50 ms by a QTimer on the main thread
+#
 #  On startup:
 #    1. Sets up logging
 #    2. Scans / loads installed apps
 #    3. Starts listener thread
-#    4. Starts system tray (blocking)
+#    4. Creates QApplication + ui dispatch queue
+#    5. Starts tray thread
+#    6. qt_app.exec() runs on main thread (blocks until quit)
 #
 #  On quit (from tray):
-#    5. Stops listener thread cleanly
-#    6. Exits
+#    7. Stops listener thread cleanly
+#    8. qt_app.quit() signals main thread to exit exec()
+#    9. sys.exit(0)
 # ─────────────────────────────────────────
 import ctypes
 ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("thattimelessman.showme.1.0")
 import sys
 import os
-os.environ["VOSK_LOG_LEVEL"] = "-1" # silence Vosk logs (set to "0" to enable)
+os.environ["VOSK_LOG_LEVEL"] = "-1"
 import logging
 import threading
+import queue
 
 # ── make sure project root is on path ────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -51,15 +61,12 @@ def _setup_logging():
 #  Autostart helpers (Windows only)
 # ─────────────────────────────────────────
 def _add_to_autostart():
-    #i added this line 54 log= logging.getLogger("showme") 
     log = logging.getLogger("showme")
     try:
         import winreg
-        # find pythonw.exe — runs without terminal
         pythonw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
         script  = os.path.join(BASE_DIR, "showme.pyw")
         value   = f'"{pythonw}" "{script}"'
-
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
             r"Software\Microsoft\Windows\CurrentVersion\Run",
@@ -70,6 +77,7 @@ def _add_to_autostart():
         log.info("Autostart set.")
     except Exception as e:
         log.warning(f"Autostart failed: {e}")
+
 
 # ─────────────────────────────────────────
 #  Main
@@ -97,18 +105,47 @@ def main():
     # ── 3. Add to autostart (first run) ──
     _add_to_autostart()
 
-    # ── 4. Tray callbacks ────────────────
-    _is_paused = [False]   # mutable flag — shared across closures
+    # ── 4. Create QApplication on main thread ──
+    # Qt mandates that QApplication exists on the main thread.
+    # All subsequent Qt widgets/timers created by _show_window and
+    # _show (overlay) will also run here via the drain queue.
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtCore import QTimer
+    qt_app = QApplication(sys.argv)
+    qt_app.setQuitOnLastWindowClosed(False)
+
+    # ── 5. UI dispatch queue ─────────────
+    # Background threads (tray callbacks, listener) post callables here.
+    # The drain timer executes them on the main thread every 50 ms.
+    _ui_queue = queue.Queue()
+
+    from frontend import overlay as _overlay_mod
+    from frontend import settings_window as _settings_mod
+    _overlay_mod.init(_ui_queue)
+    _settings_mod.init(_ui_queue)
+
+    def _drain_ui_queue():
+        try:
+            while True:
+                fn = _ui_queue.get_nowait()
+                fn()
+        except queue.Empty:
+            pass
+
+    drain_timer = QTimer()
+    drain_timer.timeout.connect(_drain_ui_queue)
+    drain_timer.start(50)
+
+    # ── 6. Tray callbacks ────────────────
+    _is_paused = [False]
 
     def on_quit():
         log.info("Quit requested.")
         listener.stop()
-        sys.exit(0)
+        _ui_queue.put(qt_app.quit)   # tells exec() on the main thread to return
 
     def on_settings():
         from frontend.settings_window import open_settings
-        # Prime the queue with current state so the settings window
-        # opens showing the correct icon immediately, even if already paused.
         listener.status_queue.put_nowait("Stopped" if _is_paused[0] else "Listening")
         open_settings(app_dict, on_rescan, listener.status_queue)
 
@@ -124,7 +161,6 @@ def main():
         if paused:
             listener.stop()
         else:
-            # for restarting listener thread 
             t = threading.Thread(
                 target=listener.start,
                 args=(app_dict, MODEL_DIR, SAMPLE_RATE, CHUNK_SIZE),
@@ -134,7 +170,8 @@ def main():
             listener._running.set()
             t.start()
 
-    # ── 5. Run tray (blocks until quit) ──
+    # ── 7. Run tray in background thread ──
+    # pystray only needs a win32 message pump — it works fine off-main-thread.
     from frontend.tray import ShowMeTray
     tray = ShowMeTray(
         on_quit=on_quit,
@@ -142,7 +179,13 @@ def main():
         on_rescan=on_rescan,
         on_pause_resume=on_pause_resume
     )
-    tray.run()
+    tray_thread = threading.Thread(target=tray.run, daemon=True, name="ShowMe-Tray")
+    tray_thread.start()
+
+    # ── 8. Qt event loop on main thread ──
+    # Blocks here until qt_app.quit() is called (from on_quit above).
+    qt_app.exec()
+    sys.exit(0)
 
 
 if __name__ == "__main__":
