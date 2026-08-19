@@ -22,7 +22,7 @@ CHANNELS        = 1       # mono
 TRIGGER_PHRASE  = "show me"   # what activates ShowMe
 
 # ── Matching ─────────────────────────────
-MATCH_THRESHOLD = 85    # 0-100 — lower = more lenient, higher = stricter
+MATCH_THRESHOLD = 60    # 0-100 — lower = more lenient, higher = stricter
 MAX_RESULTS     = 1       # how many fuzzy matches to consider
 
 # ── Weather (optional) ───────────────────
