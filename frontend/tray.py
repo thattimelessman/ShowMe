@@ -1,10 +1,11 @@
 # pylint: disable=all
 # ─────────────────────────────────────────
-#  ShowMe — frontend/tray.py  v5
+#  ShowMe — frontend/tray.py  v6
 #
-#  Fixes vs v4:
-#   [1] _set_dpi_aware() is now ACTUALLY CALLED at the top of run()
-#       before the Icon object is created — fixes blurry-first-click bug.
+#  Changes vs v5:
+#   [1] Left-click / touchpad tap now opens the context menu
+#       (default=True item now calls icon._show_menu() instead of None)
+#   All other behaviour identical to v5.
 # ─────────────────────────────────────────
 
 import os
@@ -27,11 +28,9 @@ def _set_dpi_aware():
     Idempotent — safe to call more than once.
     """
     try:
-        # Per-monitor v2 (Windows 10 1703+) — sharpest result
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
         try:
-            # System DPI fallback (Windows Vista+)
             ctypes.windll.user32.SetProcessDPIAware()
         except Exception:
             pass
@@ -63,13 +62,20 @@ class ShowMeTray:
         self._paused         = False
         self._icon           = None
 
+    # [1] Called by left-click — shows the same menu as right-click
+    def _open_menu(self, icon, item):
+        try:
+            icon._show_menu()
+        except Exception:
+            pass
+
     def _build_menu(self):
         import pystray
         pause_label = "Resume" if self._paused else "Pause"
         return pystray.Menu(
             pystray.MenuItem(
                 "ShowMe  v1.0",
-                None,
+                self._open_menu,   # [1] was: None
                 enabled=False,
                 default=True,
             ),
@@ -102,13 +108,11 @@ class ShowMeTray:
     def run(self):
         import pystray
 
-        # ← FIX [1]: Must be called BEFORE Icon() is created.
-        # Previously defined but never invoked — causing blurry first render.
         _set_dpi_aware()
 
         self._icon = pystray.Icon(
             name  = "ShowMe",
-            icon  = _load_icon(True),   # green on startup
+            icon  = _load_icon(True),
             title = "ShowMe — say 'show me [app]'",
             menu  = self._build_menu(),
         )
